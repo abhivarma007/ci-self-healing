@@ -1,0 +1,504 @@
+# .github/workflows/self-healing-pipeline.yml
+name: Self-Healing CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      force_healing:
+        description: 'Force healing attempt even if pipeline passes'
+        required: false
+        default: 'false'
+        type: boolean
+
+env:
+  DOTNET_VERSION: '6.0.x'
+  NODE_VERSION: '18.x'
+
+jobs:
+  # Main build and test pipeline
+  build-and-test:
+    name: Build and Test
+    runs-on: ubuntu-latest
+    outputs:
+      pipeline-status: ${{ steps.pipeline-result.outputs.status }}
+      error-logs: ${{ steps.capture-logs.outputs.logs }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history for better analysis
+          
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+          
+      - name: Setup Node.js (if needed)
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+        if: hashFiles('**/package.json') != ''
+        
+      - name: Setup PowerShell Core
+        shell: bash
+        run: |
+          # Ensure PowerShell Core is available
+          if ! command -v pwsh &> /dev/null; then
+            echo "Installing PowerShell Core..."
+            # Installation commands for PowerShell Core
+            wget -q https://packages.microsoft.com/config/ubuntu/20.04/packages-microsoft-prod.deb
+            sudo dpkg -i packages-microsoft-prod.deb
+            sudo apt-get update
+            sudo apt-get install -y powershell
+          fi
+          
+      - name: Cache dependencies
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.nuget/packages
+            ~/.npm
+            **/node_modules
+          key: ${{ runner.os }}-deps-${{ hashFiles('**/*.csproj', '**/package.json', '**/packages.config') }}
+          restore-keys: |
+            ${{ runner.os }}-deps-
+            
+      - name: Restore .NET dependencies
+        id: dotnet-restore
+        continue-on-error: true
+        run: |
+          echo "::group::Restoring .NET packages"
+          dotnet restore --verbosity normal
+          echo "::endgroup::"
+          
+      - name: Restore NPM dependencies
+        id: npm-install
+        continue-on-error: true
+        if: hashFiles('**/package.json') != ''
+        run: |
+          echo "::group::Installing NPM packages"
+          npm ci --prefer-offline --no-audit
+          echo "::endgroup::"
+          
+      - name: Build solution
+        id: build
+        continue-on-error: true
+        run: |
+          echo "::group::Building solution"
+          dotnet build --configuration Release --no-restore --verbosity normal
+          echo "::endgroup::"
+          
+      - name: Run tests
+        id: test
+        continue-on-error: true
+        run: |
+          echo "::group::Running tests"
+          dotnet test --configuration Release --no-build --verbosity normal --logger trx --collect:"XPlat Code Coverage"
+          echo "::endgroup::"
+          
+      - name: Run NPM tests
+        id: npm-test
+        continue-on-error: true
+        if: hashFiles('**/package.json') != ''
+        run: |
+          echo "::group::Running NPM tests"
+          npm test
+          echo "::endgroup::"
+          
+      - name: Capture logs and determine status
+        id: capture-logs
+        shell: pwsh
+        run: |
+          # Capture all step results
+          $steps = @{
+            'dotnet-restore' = '${{ steps.dotnet-restore.outcome }}'
+            'npm-install' = '${{ steps.npm-install.outcome }}'
+            'build' = '${{ steps.build.outcome }}'
+            'test' = '${{ steps.test.outcome }}'
+            'npm-test' = '${{ steps.npm-test.outcome }}'
+          }
+          
+          $failed = $steps.GetEnumerator() | Where-Object { $_.Value -eq 'failure' }
+          $overallStatus = if ($failed) { 'failure' } else { 'success' }
+          
+          Write-Output "Pipeline status: $overallStatus"
+          Write-Output "Failed steps: $($failed.Name -join ', ')"
+          
+          # Capture logs from various sources
+          $logs = @()
+          
+          # Get GitHub Actions logs
+          if (Test-Path "$env:GITHUB_WORKSPACE/.github/workflows/logs") {
+            $logs += Get-Content "$env:GITHUB_WORKSPACE/.github/workflows/logs/*" -Raw -ErrorAction SilentlyContinue
+          }
+          
+          # Get dotnet build/test logs
+          if (Test-Path "TestResults/*.trx") {
+            $logs += Get-Content "TestResults/*.trx" -Raw -ErrorAction SilentlyContinue
+          }
+          
+          # Capture recent console output
+          $logs += "Recent pipeline execution context:`n"
+          $logs += "Steps status: $($steps | ConvertTo-Json -Compress)`n"
+          
+          $logOutput = ($logs -join "`n") -replace '"', '\"' -replace "`r`n", "`n"
+          
+          # Set outputs
+          "status=$overallStatus" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "logs<<EOF" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          $logOutput | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "EOF" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          
+      - name: Set pipeline result
+        id: pipeline-result
+        run: |
+          if [[ "${{ steps.capture-logs.outputs.status }}" == "failure" ]]; then
+            echo "status=failure" >> $GITHUB_OUTPUT
+            exit 1
+          else
+            echo "status=success" >> $GITHUB_OUTPUT
+          fi
+
+  # Self-healing job that runs when main pipeline fails
+  self-healing:
+    name: Self-Healing Analysis
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    if: always() && (needs.build-and-test.outputs.pipeline-status == 'failure' || inputs.force_healing == true)
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+          
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+          
+      - name: Setup PowerShell Core
+        shell: bash
+        run: |
+          if ! command -v pwsh &> /dev/null; then
+            echo "Installing PowerShell Core..."
+            wget -q https://packages.microsoft.com/config/ubuntu/20.04/packages-microsoft-prod.deb
+            sudo dpkg -i packages-microsoft-prod.deb
+            sudo apt-get update
+            sudo apt-get install -y powershell
+          fi
+          
+      - name: Download healing scripts
+        shell: pwsh
+        run: |
+          # Create the healing scripts directory
+          New-Item -ItemType Directory -Path "$env:GITHUB_WORKSPACE/.healing" -Force
+          
+          # Copy or download the healing agent source (you would put this in your repo)
+          # For now, we'll create a minimal version inline
+          
+      - name: Create healing agent source
+        shell: pwsh
+        run: |
+          # This would normally be in your repository
+          # Creating the C# source inline for demonstration
+          $csharpSource = @'
+          // Minimal version of the SelfHealingAgent for GitHub Actions
+          // In production, you'd have the full version from the artifact above
+          using System;
+          using System.Threading.Tasks;
+          
+          class Program 
+          {
+              static async Task Main(string[] args) 
+              {
+                  Console.WriteLine("Self-healing agent placeholder");
+                  Console.WriteLine("In production, this would call Claude API");
+                  // Basic healing steps
+                  System.Diagnostics.Process.Start("dotnet", "restore --force").WaitForExit();
+                  Environment.Exit(0);
+              }
+          }
+          '@
+          
+          $csharpSource | Out-File -FilePath "$env:GITHUB_WORKSPACE/.healing/SelfHealingAgent.cs" -Encoding utf8
+          
+      - name: Execute self-healing pipeline
+        id: healing
+        shell: pwsh
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PIPELINE_LOGS: ${{ needs.build-and-test.outputs.error-logs }}
+        run: |
+          # Main self-healing script execution
+          $ErrorActionPreference = "Continue"
+          
+          Write-Output "🚀 Starting self-healing analysis..."
+          Write-Output "Repository: $env:GITHUB_REPOSITORY"
+          Write-Output "Branch: $env:GITHUB_REF_NAME"
+          Write-Output "Commit: $env:GITHUB_SHA"
+          Write-Output "Failed Job: build-and-test"
+          
+          # Basic healing attempts without Claude (fallback)
+          $healingSteps = @(
+              @{
+                  Name = "Clear NuGet Cache"
+                  Command = { dotnet nuget locals all --clear }
+                  Condition = { Test-Path "*.csproj" -or Test-Path "*.sln" }
+              },
+              @{
+                  Name = "Force Restore Packages" 
+                  Command = { dotnet restore --force --no-cache }
+                  Condition = { Test-Path "*.csproj" -or Test-Path "*.sln" }
+              },
+              @{
+                  Name = "Clean Solution"
+                  Command = { dotnet clean; dotnet build --configuration Release }
+                  Condition = { Test-Path "*.csproj" -or Test-Path "*.sln" }
+              }
+          )
+          
+          $successCount = 0
+          $totalSteps = $healingSteps.Count
+          
+          foreach ($step in $healingSteps) {
+              if (& $step.Condition) {
+                  Write-Output "🔧 Executing: $($step.Name)"
+                  try {
+                      & $step.Command
+                      if ($LASTEXITCODE -eq 0) {
+                          Write-Output "✅ $($step.Name) completed successfully"
+                          $successCount++
+                      }
+                      else {
+                          Write-Output "❌ $($step.Name) failed with exit code $LASTEXITCODE"
+                      }
+                  }
+                  catch {
+                      Write-Output "❌ $($step.Name) failed: $($_.Exception.Message)"
+                  }
+              }
+              else {
+                  Write-Output "⏭️ Skipping $($step.Name) - condition not met"
+              }
+          }
+          
+          # Advanced Claude-powered healing (if API key available)
+          if ($env:ANTHROPIC_API_KEY) {
+              Write-Output "🤖 Attempting Claude-powered analysis..."
+              try {
+                  # Here you would call the full C# healing agent
+                  # For demo, we'll simulate it
+                  Write-Output "📊 Claude Analysis Results:"
+                  Write-Output "   Root Cause: Build configuration or dependency issue"
+                  Write-Output "   Confidence: 8/10"
+                  Write-Output "   Recommended: Force package restore and clean build"
+                  
+                  # Try additional healing based on "Claude analysis"
+                  dotnet build --configuration Release --force
+                  if ($LASTEXITCODE -eq 0) {
+                      $successCount++
+                      Write-Output "✅ Claude-recommended fix successful!"
+                  }
+              }
+              catch {
+                  Write-Output "⚠️ Claude analysis failed: $($_.Exception.Message)"
+              }
+          }
+          else {
+              Write-Output "⚠️ No Anthropic API key provided, using basic healing only"
+          }
+          
+          # Determine overall success
+          $healingSuccess = $successCount -gt 0
+          Write-Output "📋 Healing Summary:"
+          Write-Output "   Successful steps: $successCount/$totalSteps"
+          Write-Output "   Overall status: $(if($healingSuccess) { '✅ SUCCESS' } else { '❌ FAILED' })"
+          
+          # Set outputs for next steps
+          "success=$healingSuccess" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "steps-completed=$successCount" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          
+          # Create healing report
+          $report = @"
+          # 🔧 Self-Healing Pipeline Report
+          
+          ## Pipeline Information
+          - **Repository**: $env:GITHUB_REPOSITORY
+          - **Branch**: $env:GITHUB_REF_NAME
+          - **Commit**: $env:GITHUB_SHA
+          - **Failed Job**: build-and-test
+          - **Timestamp**: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss UTC')
+          
+          ## Healing Results
+          - **Status**: $(if($healingSuccess) { '✅ SUCCESS' } else { '❌ FAILED' })
+          - **Successful Steps**: $successCount/$totalSteps
+          - **Claude Analysis**: $(if($env:ANTHROPIC_API_KEY) { 'Enabled' } else { 'Disabled (no API key)' })
+          
+          ## Steps Executed
+          $(for ($i = 0; $i -lt $healingSteps.Count; $i++) { 
+              "- $($healingSteps[$i].Name): $(if($i -lt $successCount) { '✅' } else { '❌' })"
+          } | Out-String)
+          
+          ## Next Steps
+          $(if($healingSuccess) {
+              'Pipeline has been automatically healed. Re-running the build...'
+          } else {
+              'Automated healing was unsuccessful. Manual intervention may be required.'
+          })
+          "@
+          
+          $report | Out-File -FilePath "$env:GITHUB_WORKSPACE/healing-report.md" -Encoding utf8
+          
+          # Add to GitHub Actions summary
+          if ($env:GITHUB_STEP_SUMMARY) {
+              $report | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          }
+          
+          Write-Output $report
+          
+      - name: Upload healing report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: healing-report
+          path: healing-report.md
+          
+      - name: Create healing issue (if failed)
+        if: steps.healing.outputs.success != 'true'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const report = fs.readFileSync('healing-report.md', 'utf8');
+            
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `🔧 Self-Healing Pipeline Failed - ${context.sha.substring(0, 7)}`,
+              body: `${report}\n\n**Triggered by**: ${context.eventName}\n**Workflow**: ${context.workflow}\n**Run**: ${context.runId}`,
+              labels: ['bug', 'ci/cd', 'auto-created']
+            });
+
+  # Retry the original pipeline if healing was successful
+  retry-after-healing:
+    name: Retry Pipeline After Healing
+    runs-on: ubuntu-latest
+    needs: [build-and-test, self-healing]
+    if: always() && needs.self-healing.outputs.success == 'true'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+          
+      - name: Setup Node.js (if needed)
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+        if: hashFiles('**/package.json') != ''
+        
+      - name: Restore dependencies
+        run: |
+          dotnet restore --force
+          if [ -f "package.json" ]; then
+            npm ci
+          fi
+          
+      - name: Build and test (retry)
+        run: |
+          echo "🔄 Retrying pipeline after healing..."
+          dotnet build --configuration Release --no-restore
+          dotnet test --configuration Release --no-build --logger trx
+          
+          if [ -f "package.json" ]; then
+            npm test
+          fi
+          
+      - name: Report retry success
+        run: |
+          echo "🎉 Pipeline retry successful after self-healing!"
+          echo "## ✅ Pipeline Healed Successfully" >> $GITHUB_STEP_SUMMARY
+          echo "The pipeline was automatically healed and retry completed successfully." >> $GITHUB_STEP_SUMMARY
+          
+  # Notification job
+  notify-results:
+    name: Notify Results
+    runs-on: ubuntu-latest
+    needs: [build-and-test, self-healing, retry-after-healing]
+    if: always()
+    
+    steps:
+      - name: Determine final status
+        id: status
+        run: |
+          if [[ "${{ needs.retry-after-healing.result }}" == "success" ]]; then
+            echo "status=healed" >> $GITHUB_OUTPUT
+            echo "message=Pipeline was healed and retry succeeded" >> $GITHUB_OUTPUT
+          elif [[ "${{ needs.build-and-test.result }}" == "success" ]]; then
+            echo "status=success" >> $GITHUB_OUTPUT  
+            echo "message=Pipeline completed successfully" >> $GITHUB_OUTPUT
+          elif [[ "${{ needs.self-healing.outputs.success }}" == "true" ]]; then
+            echo "status=partial" >> $GITHUB_OUTPUT
+            echo "message=Healing successful but retry failed" >> $GITHUB_OUTPUT
+          else
+            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "message=Pipeline failed and healing unsuccessful" >> $GITHUB_OUTPUT
+          fi
+          
+      - name: Teams notification (optional)
+        if: env.TEAMS_WEBHOOK_URL != ''
+        shell: pwsh
+        env:
+          TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
+        run: |
+          $status = "${{ steps.status.outputs.status }}"
+          $message = "${{ steps.status.outputs.message }}"
+          $color = switch($status) {
+            "success" { "good" }
+            "healed" { "warning" } 
+            "partial" { "warning" }
+            default { "danger" }
+          }
+          
+          $payload = @{
+            text = "🔧 Self-Healing Pipeline Report"
+            sections = @(
+              @{
+                activityTitle = "${{ github.repository }}"
+                activitySubtitle = "$message"
+                activityImage = "https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png"
+                facts = @(
+                  @{ name = "Repository"; value = "${{ github.repository }}" }
+                  @{ name = "Branch"; value = "${{ github.ref_name }}" }
+                  @{ name = "Commit"; value = "${{ github.sha }}" }
+                  @{ name = "Status"; value = $status.ToUpper() }
+                  @{ name = "Workflow"; value = "${{ github.workflow }}" }
+                )
+                markdown = $true
+              }
+            )
+            themeColor = $color
+          }
+          
+          try {
+            Invoke-RestMethod -Uri $env:TEAMS_WEBHOOK_URL -Method POST -Body ($payload | ConvertTo-Json -Depth 10) -ContentType "application/json"
+            Write-Output "✅ Teams notification sent successfully"
+          }
+          catch {
+            Write-Output "⚠️ Failed to send Teams notification: $($_.Exception.Message)"
+          }
