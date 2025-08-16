@@ -1,0 +1,12 @@
+{
+  "version": 2,
+  "dgSpecHash": "hN7t0hIYEi4=",
+  "success": true,
+  "projectFilePath": "/Users/richagaddam/Desktop/DevOps/ci-self-healing-pov/ci-self-healing/DotnetSampleApp/src/DotnetSampleApp/DotnetSampleApp.csproj",
+  "expectedPackageFiles": [
+    "/Users/richagaddam/.nuget/packages/microsoft.netcore.app.ref/8.0.16/microsoft.netcore.app.ref.8.0.16.nupkg.sha512",
+    "/Users/richagaddam/.nuget/packages/microsoft.aspnetcore.app.ref/8.0.16/microsoft.aspnetcore.app.ref.8.0.16.nupkg.sha512",
+    "/Users/richagaddam/.nuget/packages/microsoft.netcore.app.host.osx-x64/8.0.16/microsoft.netcore.app.host.osx-x64.8.0.16.nupkg.sha512"
+  ],
+  "logs": []
+}

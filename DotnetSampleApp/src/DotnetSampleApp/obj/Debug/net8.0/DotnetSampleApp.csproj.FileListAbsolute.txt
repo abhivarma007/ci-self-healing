@@ -1,0 +1,15 @@
+/Users/richagaddam/Desktop/DevOps/ci-self-healing-pov/ci-self-healing/DotnetSampleApp/src/DotnetSampleApp/bin/Debug/net8.0/DotnetSampleApp
+/Users/richagaddam/Desktop/DevOps/ci-self-healing-pov/ci-self-healing/DotnetSampleApp/src/DotnetSampleApp/bin/Debug/net8.0/DotnetSampleApp.deps.json
+/Users/richagaddam/Desktop/DevOps/ci-self-healing-pov/ci-self-healing/DotnetSampleApp/src/DotnetSampleApp/bin/Debug/net8.0/DotnetSampleApp.runtimeconfig.json
+/Users/richagaddam/Desktop/DevOps/ci-self-healing-pov/ci-self-healing/DotnetSampleApp/src/DotnetSampleApp/bin/Debug/net8.0/DotnetSampleApp.dll
+/Users/richagaddam/Desktop/DevOps/ci-self-healing-pov/ci-self-healing/DotnetSampleApp/src/DotnetSampleApp/bin/Debug/net8.0/DotnetSampleApp.pdb
+/Users/richagaddam/Desktop/DevOps/ci-self-healing-pov/ci-self-healing/DotnetSampleApp/src/DotnetSampleApp/obj/Debug/net8.0/DotnetSampleApp.GeneratedMSBuildEditorConfig.editorconfig
+/Users/richagaddam/Desktop/DevOps/ci-self-healing-pov/ci-self-healing/DotnetSampleApp/src/DotnetSampleApp/obj/Debug/net8.0/DotnetSampleApp.AssemblyInfoInputs.cache
+/Users/richagaddam/Desktop/DevOps/ci-self-healing-pov/ci-self-healing/DotnetSampleApp/src/DotnetSampleApp/obj/Debug/net8.0/DotnetSampleApp.AssemblyInfo.cs
+/Users/richagaddam/Desktop/DevOps/ci-self-healing-pov/ci-self-healing/DotnetSampleApp/src/DotnetSampleApp/obj/Debug/net8.0/DotnetSampleApp.csproj.CoreCompileInputs.cache
+/Users/richagaddam/Desktop/DevOps/ci-self-healing-pov/ci-self-healing/DotnetSampleApp/src/DotnetSampleApp/obj/Debug/net8.0/DotnetSampleApp.sourcelink.json
+/Users/richagaddam/Desktop/DevOps/ci-self-healing-pov/ci-self-healing/DotnetSampleApp/src/DotnetSampleApp/obj/Debug/net8.0/DotnetSampleApp.dll
+/Users/richagaddam/Desktop/DevOps/ci-self-healing-pov/ci-self-healing/DotnetSampleApp/src/DotnetSampleApp/obj/Debug/net8.0/refint/DotnetSampleApp.dll
+/Users/richagaddam/Desktop/DevOps/ci-self-healing-pov/ci-self-healing/DotnetSampleApp/src/DotnetSampleApp/obj/Debug/net8.0/DotnetSampleApp.pdb
+/Users/richagaddam/Desktop/DevOps/ci-self-healing-pov/ci-self-healing/DotnetSampleApp/src/DotnetSampleApp/obj/Debug/net8.0/DotnetSampleApp.genruntimeconfig.cache
+/Users/richagaddam/Desktop/DevOps/ci-self-healing-pov/ci-self-healing/DotnetSampleApp/src/DotnetSampleApp/obj/Debug/net8.0/ref/DotnetSampleApp.dll
