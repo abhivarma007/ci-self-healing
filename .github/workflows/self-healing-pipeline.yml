@@ -149,20 +149,24 @@ jobs:
           
           $logOutput = ($logs -join "`n") -replace '"', '\"' -replace "`r`n", "`n"
           
-          # Set outputs
-          "status=$overallStatus" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          "logs<<EOF" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          $logOutput | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          "EOF" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          # Set outputs using proper multiline format
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "status=$overallStatus"
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "logs<<EOF"
+          Add-Content -Path $env:GITHUB_OUTPUT -Value $logOutput
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "EOF"
           
       - name: Set pipeline result
         id: pipeline-result
         run: |
-          if [[ "${{ steps.capture-logs.outputs.status }}" == "failure" ]]; then
+          # Fix the bash condition syntax
+          PIPELINE_STATUS="${{ steps.capture-logs.outputs.status }}"
+          if [[ "$PIPELINE_STATUS" == "failure" ]]; then
             echo "status=failure" >> $GITHUB_OUTPUT
+            echo "Pipeline failed, will trigger healing"
             exit 1
           else
             echo "status=success" >> $GITHUB_OUTPUT
+            echo "Pipeline succeeded"
           fi
 
   # Self-healing job that runs when main pipeline fails
@@ -171,6 +175,9 @@ jobs:
     runs-on: ubuntu-latest
     needs: build-and-test
     if: always() && (needs.build-and-test.outputs.pipeline-status == 'failure' || inputs.force_healing == true)
+    outputs:
+      success: ${{ steps.healing.outputs.success }}
+      steps-completed: ${{ steps.healing.outputs.steps-completed }}
     
     steps:
       - name: Checkout code
@@ -194,41 +201,6 @@ jobs:
             sudo apt-get update
             sudo apt-get install -y powershell
           fi
-          
-      - name: Download healing scripts
-        shell: pwsh
-        run: |
-          # Create the healing scripts directory
-          New-Item -ItemType Directory -Path "$env:GITHUB_WORKSPACE/.healing" -Force
-          
-          # Copy or download the healing agent source (you would put this in your repo)
-          # For now, we'll create a minimal version inline
-          
-      - name: Create healing agent source
-        shell: pwsh
-        run: |
-          # This would normally be in your repository
-          # Creating the C# source inline for demonstration
-          $csharpSource = @'
-          // Minimal version of the SelfHealingAgent for GitHub Actions
-          // In production, you'd have the full version from the artifact above
-          using System;
-          using System.Threading.Tasks;
-          
-          class Program 
-          {
-              static async Task Main(string[] args) 
-              {
-                  Console.WriteLine("Self-healing agent placeholder");
-                  Console.WriteLine("In production, this would call Claude API");
-                  // Basic healing steps
-                  System.Diagnostics.Process.Start("dotnet", "restore --force").WaitForExit();
-                  Environment.Exit(0);
-              }
-          }
-          '@
-          
-          $csharpSource | Out-File -FilePath "$env:GITHUB_WORKSPACE/.healing/SelfHealingAgent.cs" -Encoding utf8
           
       - name: Execute self-healing pipeline
         id: healing
@@ -324,30 +296,34 @@ jobs:
           Write-Output "   Overall status: $(if($healingSuccess) { '✅ SUCCESS' } else { '❌ FAILED' })"
           
           # Set outputs for next steps
-          "success=$healingSuccess" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          "steps-completed=$successCount" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "success=$healingSuccess"
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "steps-completed=$successCount"
           
-          # Create healing report
+          # Create healing report - Fix the PowerShell syntax error
+          $stepResults = @()
+          for ($i = 0; $i -lt $healingSteps.Count; $i++) { 
+              $stepResults += "- $($healingSteps[$i].Name): $(if($i -lt $successCount) { '✅' } else { '❌' })"
+          }
+          $stepResultsString = $stepResults -join "`n"
+          
           $report = @"
           # 🔧 Self-Healing Pipeline Report
-          
+
           ## Pipeline Information
           - **Repository**: $env:GITHUB_REPOSITORY
           - **Branch**: $env:GITHUB_REF_NAME
           - **Commit**: $env:GITHUB_SHA
           - **Failed Job**: build-and-test
           - **Timestamp**: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss UTC')
-          
+
           ## Healing Results
           - **Status**: $(if($healingSuccess) { '✅ SUCCESS' } else { '❌ FAILED' })
           - **Successful Steps**: $successCount/$totalSteps
           - **Claude Analysis**: $(if($env:ANTHROPIC_API_KEY) { 'Enabled' } else { 'Disabled (no API key)' })
-          
+
           ## Steps Executed
-          $(for ($i = 0; $i -lt $healingSteps.Count; $i++) { 
-              "- $($healingSteps[$i].Name): $(if($i -lt $successCount) { '✅' } else { '❌' })"
-          } | Out-String)
-          
+          $stepResultsString
+
           ## Next Steps
           $(if($healingSuccess) {
               'Pipeline has been automatically healed. Re-running the build...'
@@ -355,23 +331,23 @@ jobs:
               'Automated healing was unsuccessful. Manual intervention may be required.'
           })
           "@
-          
-          $report | Out-File -FilePath "$env:GITHUB_WORKSPACE/healing-report.md" -Encoding utf8
-          
-          # Add to GitHub Actions summary
-          if ($env:GITHUB_STEP_SUMMARY) {
-              $report | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
-          }
-          
-          Write-Output $report
-          
+                    
+                    $report | Out-File -FilePath "$env:GITHUB_WORKSPACE/healing-report.md" -Encoding utf8
+                    
+                    # Add to GitHub Actions summary
+                    if ($env:GITHUB_STEP_SUMMARY) {
+                        $report | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+                    }
+                    
+                    Write-Output $report
+                    
       - name: Upload healing report
         uses: actions/upload-artifact@v4
         if: always()
         with:
           name: healing-report
           path: healing-report.md
-          
+                    
       - name: Create healing issue (if failed)
         if: steps.healing.outputs.success != 'true'
         uses: actions/github-script@v7
@@ -380,7 +356,7 @@ jobs:
           script: |
             const fs = require('fs');
             const report = fs.readFileSync('healing-report.md', 'utf8');
-            
+                      
             await github.rest.issues.create({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -389,116 +365,116 @@ jobs:
               labels: ['bug', 'ci/cd', 'auto-created']
             });
 
-  # Retry the original pipeline if healing was successful
+            # Retry the original pipeline if healing was successful
   retry-after-healing:
-    name: Retry Pipeline After Healing
-    runs-on: ubuntu-latest
-    needs: [build-and-test, self-healing]
-    if: always() && needs.self-healing.outputs.success == 'true'
-    
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        
-      - name: Setup .NET
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: ${{ env.DOTNET_VERSION }}
+      name: Retry Pipeline After Healing
+      runs-on: ubuntu-latest
+      needs: [build-and-test, self-healing]
+      if: always() && needs.self-healing.outputs.success == 'true'
+      
+      steps:
+        - name: Checkout code
+          uses: actions/checkout@v4
           
-      - name: Setup Node.js (if needed)
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: 'npm'
-        if: hashFiles('**/package.json') != ''
-        
-      - name: Restore dependencies
-        run: |
-          dotnet restore --force
-          if [ -f "package.json" ]; then
-            npm ci
-          fi
+        - name: Setup .NET
+          uses: actions/setup-dotnet@v4
+          with:
+            dotnet-version: ${{ env.DOTNET_VERSION }}
+            
+        - name: Setup Node.js (if needed)
+          uses: actions/setup-node@v4
+          with:
+            node-version: ${{ env.NODE_VERSION }}
+            cache: 'npm'
+          if: hashFiles('**/package.json') != ''
           
-      - name: Build and test (retry)
-        run: |
-          echo "🔄 Retrying pipeline after healing..."
-          dotnet build --configuration Release --no-restore
-          dotnet test --configuration Release --no-build --logger trx
-          
-          if [ -f "package.json" ]; then
-            npm test
-          fi
-          
-      - name: Report retry success
-        run: |
-          echo "🎉 Pipeline retry successful after self-healing!"
-          echo "## ✅ Pipeline Healed Successfully" >> $GITHUB_STEP_SUMMARY
-          echo "The pipeline was automatically healed and retry completed successfully." >> $GITHUB_STEP_SUMMARY
-          
-  # Notification job
+        - name: Restore dependencies
+          run: |
+            dotnet restore --force
+            if [ -f "package.json" ]; then
+              npm ci
+            fi
+            
+        - name: Build and test (retry)
+          run: |
+            echo "🔄 Retrying pipeline after healing..."
+            dotnet build --configuration Release --no-restore
+            dotnet test --configuration Release --no-build --logger trx
+            
+            if [ -f "package.json" ]; then
+              npm test
+            fi
+            
+        - name: Report retry success
+          run: |
+            echo "🎉 Pipeline retry successful after self-healing!"
+            echo "## ✅ Pipeline Healed Successfully" >> $GITHUB_STEP_SUMMARY
+            echo "The pipeline was automatically healed and retry completed successfully." >> $GITHUB_STEP_SUMMARY
+            
+# Notification job
   notify-results:
-    name: Notify Results
-    runs-on: ubuntu-latest
-    needs: [build-and-test, self-healing, retry-after-healing]
-    if: always()
-    
-    steps:
-      - name: Determine final status
-        id: status
-        run: |
-          if [[ "${{ needs.retry-after-healing.result }}" == "success" ]]; then
-            echo "status=healed" >> $GITHUB_OUTPUT
-            echo "message=Pipeline was healed and retry succeeded" >> $GITHUB_OUTPUT
-          elif [[ "${{ needs.build-and-test.result }}" == "success" ]]; then
-            echo "status=success" >> $GITHUB_OUTPUT  
-            echo "message=Pipeline completed successfully" >> $GITHUB_OUTPUT
-          elif [[ "${{ needs.self-healing.outputs.success }}" == "true" ]]; then
-            echo "status=partial" >> $GITHUB_OUTPUT
-            echo "message=Healing successful but retry failed" >> $GITHUB_OUTPUT
-          else
-            echo "status=failed" >> $GITHUB_OUTPUT
-            echo "message=Pipeline failed and healing unsuccessful" >> $GITHUB_OUTPUT
-          fi
-          
-      - name: Teams notification (optional)
-        if: env.TEAMS_WEBHOOK_URL != ''
-        shell: pwsh
-        env:
-          TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
-        run: |
-          $status = "${{ steps.status.outputs.status }}"
-          $message = "${{ steps.status.outputs.message }}"
-          $color = switch($status) {
-            "success" { "good" }
-            "healed" { "warning" } 
-            "partial" { "warning" }
-            default { "danger" }
-          }
-          
-          $payload = @{
-            text = "🔧 Self-Healing Pipeline Report"
-            sections = @(
-              @{
-                activityTitle = "${{ github.repository }}"
-                activitySubtitle = "$message"
-                activityImage = "https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png"
-                facts = @(
-                  @{ name = "Repository"; value = "${{ github.repository }}" }
-                  @{ name = "Branch"; value = "${{ github.ref_name }}" }
-                  @{ name = "Commit"; value = "${{ github.sha }}" }
-                  @{ name = "Status"; value = $status.ToUpper() }
-                  @{ name = "Workflow"; value = "${{ github.workflow }}" }
-                )
-                markdown = $true
-              }
-            )
-            themeColor = $color
-          }
-          
-          try {
-            Invoke-RestMethod -Uri $env:TEAMS_WEBHOOK_URL -Method POST -Body ($payload | ConvertTo-Json -Depth 10) -ContentType "application/json"
-            Write-Output "✅ Teams notification sent successfully"
-          }
-          catch {
-            Write-Output "⚠️ Failed to send Teams notification: $($_.Exception.Message)"
-          }
+      name: Notify Results
+      runs-on: ubuntu-latest
+      needs: [build-and-test, self-healing, retry-after-healing]
+      if: always()
+      
+      steps:
+        - name: Determine final status
+          id: status
+          run: |
+            if [[ "${{ needs.retry-after-healing.result }}" == "success" ]]; then
+              echo "status=healed" >> $GITHUB_OUTPUT
+              echo "message=Pipeline was healed and retry succeeded" >> $GITHUB_OUTPUT
+            elif [[ "${{ needs.build-and-test.result }}" == "success" ]]; then
+              echo "status=success" >> $GITHUB_OUTPUT  
+              echo "message=Pipeline completed successfully" >> $GITHUB_OUTPUT
+            elif [[ "${{ needs.self-healing.outputs.success }}" == "true" ]]; then
+              echo "status=partial" >> $GITHUB_OUTPUT
+              echo "message=Healing successful but retry failed" >> $GITHUB_OUTPUT
+            else
+              echo "status=failed" >> $GITHUB_OUTPUT
+              echo "message=Pipeline failed and healing unsuccessful" >> $GITHUB_OUTPUT
+            fi
+            
+        - name: Teams notification (optional)
+          if: env.TEAMS_WEBHOOK_URL != ''
+          shell: pwsh
+          env:
+            TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
+          run: |
+            $status = "${{ steps.status.outputs.status }}"
+            $message = "${{ steps.status.outputs.message }}"
+            $color = switch($status) {
+              "success" { "good" }
+              "healed" { "warning" } 
+              "partial" { "warning" }
+              default { "danger" }
+            }
+            
+            $payload = @{
+              text = "🔧 Self-Healing Pipeline Report"
+              sections = @(
+                @{
+                  activityTitle = "${{ github.repository }}"
+                  activitySubtitle = "$message"
+                  activityImage = "https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png"
+                  facts = @(
+                    @{ name = "Repository"; value = "${{ github.repository }}" }
+                    @{ name = "Branch"; value = "${{ github.ref_name }}" }
+                    @{ name = "Commit"; value = "${{ github.sha }}" }
+                    @{ name = "Status"; value = $status.ToUpper() }
+                    @{ name = "Workflow"; value = "${{ github.workflow }}" }
+                  )
+                  markdown = $true
+                }
+              )
+              themeColor = $color
+            }
+            
+            try {
+              Invoke-RestMethod -Uri $env:TEAMS_WEBHOOK_URL -Method POST -Body ($payload | ConvertTo-Json -Depth 10) -ContentType "application/json"
+              Write-Output "✅ Teams notification sent successfully"
+            }
+            catch {
+              Write-Output "⚠️ Failed to send Teams notification: $($_.Exception.Message)"
+                  }
