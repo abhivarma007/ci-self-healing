@@ -1,0 +1,21 @@
+name: AI Inference
+
+on:
+  workflow_dispatch
+
+permissions:
+  contents: read
+  models: read
+  
+jobs:
+  inference:
+   runs-on: ubuntu-latest
+   steps:
+     - uses: actions/checkout@v4
+
+     - uses: actions/ai-inference@v1
+       with:
+         prompt: 'Hello EE!'
+         enable-github-mcp: true
+         token: ${{ github.token }}
+         github-mcp-token: ${{ secrets.MCP_TOKEN }}
