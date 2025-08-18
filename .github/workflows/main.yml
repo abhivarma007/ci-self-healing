@@ -15,7 +15,7 @@ jobs:
 
      - uses: actions/ai-inference@v1
        with:
-         prompt: 'Hello EE!'
+         prompt: 'EE!'
          enable-github-mcp: true
          token: ${{ github.token }}
          github-mcp-token: ${{ secrets.MCP_TOKEN }}
