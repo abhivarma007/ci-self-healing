@@ -33,7 +33,7 @@ jobs:
      - uses: actions/ai-inference@v1
        with:
         prompt: 'Analyze only the main README.md file'
-        enable-github-mcp: true
+        enable-github-mcp: false
         token: ${{ github.token }}
         github-mcp-token: ${{ secrets.MCP_TOKEN }}
      
